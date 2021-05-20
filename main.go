@@ -79,7 +79,8 @@ func csv2Json(colNames []string, input io.Reader, out io.Writer) error {
 }
 
 // getCsvFile gets a pointer to an open os.File named by filename, or else
-// os.Stdin. Errors encountered when opening named files are propagated from os.Open().
+// os.Stdin. Errors encountered when opening named files are propagated from
+// os.Open().
 func getCsvFile(fileName string) (*os.File, error) {
 	if fileName == "" {
 		return os.Stdin, nil

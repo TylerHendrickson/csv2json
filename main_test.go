@@ -279,6 +279,32 @@ func TestGetCsvFile(t *testing.T) {
 	}
 }
 
+func TestGetCsvReader(t *testing.T) {
+	for _, tt := range []struct {
+		testName string
+		addBOM   bool
+	}{
+		{"Gets Reader", false},
+		{"Skips BOM", true},
+	} {
+		tempFile, err := ioutil.TempFile("", "csv2json-test-*")
+		require.NoError(t, err, "Test cannot run without a temp file")
+		if tt.addBOM {
+			_, err = tempFile.WriteString(string('\uFEFF'))
+			require.NoError(t, err, "Could not write CSV test contents to temp file")
+		}
+		_, err = tempFile.WriteString("\"a\",\"b\",\"c\"\n1,2,3\n4,5,6")
+		require.NoError(t, err, "Could not write CSV test contents to temp file")
+		_, err = tempFile.Seek(0, io.SeekStart)
+		require.NoError(t, err, "Could not prepare temp file")
+
+		reader := getCsvReader(tempFile)
+		firstRow, err := reader.Read()
+		assert.NoError(t, err)
+		assert.Equal(t, firstRow, []string{"a", "b", "c"})
+	}
+}
+
 func TestFieldsToRecords(t *testing.T) {
 	for _, tt := range []struct {
 		testName            string

@@ -43,12 +43,3 @@ func zipToMap[K comparable, V any](keys []K, values []V) map[K]V {
 	}
 	return record
 }
-
-// ZipToMapTrunc is like ZipToMap but pairs up to min(len(keys), len(values)).
-func ZipToMapTrunc[K comparable, V any](keys []K, values []V) map[K]V {
-	minLength := len(values)
-	if numKeys := len(keys); numKeys < minLength {
-		minLength = numKeys
-	}
-	return zipToMap(keys[:minLength], values[:minLength])
-}

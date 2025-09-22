@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/csv"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/TylerHendrickson/csv2json/assoc"
 	"github.com/TylerHendrickson/csv2json/csvmap"
+	"github.com/TylerHendrickson/csv2json/internal/csvctx"
 	"github.com/alecthomas/kong"
 	"github.com/mattn/go-isatty"
 	"github.com/rs/zerolog"
@@ -17,9 +19,8 @@ import (
 	"golang.org/x/text/transform"
 )
 
-// runErr is a wrapper for errors that originate from CLI.Run().
-// It signals that the error does not need to be handled by Kong
-type runErr struct {
+// reportedErr is a wrapper for errors that do not need to be reported by Kong.
+type reportedErr struct {
 	error
 }
 
@@ -27,8 +28,9 @@ type runErr struct {
 type CLI struct {
 	CSVFile *os.File ` arg:"" help:"CSV source file to transform. [default: \"-\" (to read from stdin)]" default:"-" name:"FILE" env:"CSV_FILE"`
 
-	Version    kong.VersionFlag `help:"Print version information and exit."`
-	FieldNames []string         `name:"fields" help:"Ordered CSV column names. When set, the first CSV row will be treated as a data row, not a header row. [default: (determine fields from CSV header row.)]" placeholder:"NAME" env:"CSV_FIELDS"`
+	Version     kong.VersionFlag `help:"Print version information and exit."`
+	VersionFull bool             `help:"Print detailed version information and exit."`
+	FieldNames  []string         `name:"fields" help:"Ordered CSV column names. When set, the first CSV row will be treated as a data row, not a header row. [default: (determine fields from CSV header row.)]" placeholder:"NAME" env:"CSV_FIELDS"`
 
 	OutputOpts struct {
 		AsArray bool `name:"array" help:"When set, outputs an array of parsed records. [default: (unset, i.e. outputs newline-delimited JSON.)]" env:"ARRAY"`
@@ -58,7 +60,7 @@ type CLI struct {
 		TimestampLayout string `help:"Layout for formatting logged timestamps. [default: \"${default}\" (${logTimestampDefaultName})] " default:"${logTimestampDefaultLayout}" placeholder:"LAYOUT" env:"LOG_TIMESTAMP_LAYOUT"`
 		IncludeRecords  bool   `help:"Include transformed records in log output. " name:"records" env:"LOG_INCLUDE_RECORDS"`
 		NoColor         bool   `help:"Disable colorized log output (affects pretty logs only). " default:"false" env:"NO_COLOR,LOG_NO_COLOR"`
-	} `embed:"" prefix:"log-" group:"Logging Options"`
+	} `embed:"" prefix:"log-" group:"Logging Options" description:"Control Logging Behaviors"`
 }
 
 // newLogger creates and returns a new logger according to the CLI configuration state.
@@ -80,7 +82,6 @@ func (cli *CLI) newLogger() zerolog.Logger {
 		// Add caller to all logs when minimum log level is trace
 		logger = logger.With().Caller().Logger()
 	}
-	logger = logger.With().Str("input", cli.CSVFile.Name()).Logger()
 	return logger
 }
 
@@ -103,6 +104,12 @@ func (cli *CLI) newCSVReader() *csv.Reader {
 	return reader
 }
 
+// newCSVContextReader wraps a new *csv.Reader configured by CLI.newCSVReader()
+// in a *csvContextReader for context-aware reads.
+func (cli *CLI) newCSVContextReader(ctx context.Context) *csvctx.Reader {
+	return csvctx.New(ctx, cli.newCSVReader())
+}
+
 // newRecordWriter creates a new transformation result writer according to CLI configuration
 func (cli *CLI) newRecordWriter() *jsonRecordWriter {
 	return NewJSONRecordWriter(os.Stdout, cli.OutputOpts.AsArray, int(cli.OutputOpts.BufferSize))
@@ -120,28 +127,10 @@ func (cli *CLI) Validate() error {
 }
 
 // AfterApply is a hook that configures the application after parsing.
-func (cli *CLI) AfterApply(kctx *kong.Context) error {
-	logger := cli.newLogger()
-	reader := cli.newCSVReader()
+func (cli *CLI) AfterApply(ctx context.Context, kctx *kong.Context) error {
+	logger := cli.newLogger().With().Str("input", cli.CSVFile.Name()).Logger()
+	reader := cli.newCSVContextReader(ctx)
 	writer := cli.newRecordWriter()
-
-	// Configure field names by reading the first/next CSV row if not already configured on the CLI
-	if len(cli.FieldNames) == 0 {
-		logger.Debug().Msg("reading CSV header row to determine field names")
-		cancel := DoAfterUnlessCanceled(5*time.Second, func() {
-			logger.Info().Msg("still waiting for CSV header row input")
-		})
-
-		var err error
-		cli.FieldNames, err = reader.Read()
-		cancel()
-		if err != nil {
-			return fmt.Errorf("error reading CSV header row to discover field names: %w", err)
-		}
-		logger.Debug().
-			Int("field-count", len(cli.FieldNames)).
-			Msg("derived field names from CSV header row")
-	}
 
 	logger.Trace().Interface("configuration", cli).Msg("dump final application configuration")
 	kctx.Bind(logger, reader, writer)
@@ -154,41 +143,54 @@ func (cli *CLI) AfterApply(kctx *kong.Context) error {
 			Str(fmt.Sprintf("%T", writer)),
 		).
 		Msg("adding bindings to application context")
-	logger.Info().Msg("application configuration complete")
-	return nil
-}
-
-func (cli *CLI) AfterRun(kctx *kong.Context) error {
-	fmt.Println("AFTER RUN")
 	return nil
 }
 
 // Run is the primary hook that runs the CLI application.
 // It reads records from r until EOF and transforms each record into JSON output written to w.
-// Returns an error when CSV parsing results in an error for which the application is
-// configured to abort further execution.
-func (cli *CLI) Run(logger zerolog.Logger, r *csv.Reader, w *jsonRecordWriter, a int) (err error) {
+// Returns an error when further execution is cannot continue due to requested shutdown
+// or when CSV parsing results in an error for which the application is configured to abort.
+func (cli *CLI) Run(ctx context.Context, logger zerolog.Logger, r *csvctx.Reader, w *jsonRecordWriter) (err error) {
 	defer func() {
+		logger.Debug().Msg("closing input stream")
+		if cerr := cli.CSVFile.Close(); cerr != nil {
+			logger.Err(err).Msg("error closing input stream")
+		}
+
 		logger.Debug().Msg("closing output stream")
 		if cerr := w.Close(); cerr != nil {
-			if err == nil {
-				err = fmt.Errorf("output stream close error: %w", cerr)
-			} else {
-				logger.Error().Err(err).Msg("output stream close error")
-			}
+			logger.Err(cerr).Msg("error closing output stream")
 		}
 	}()
 
-	// Flush the output buffer periodically according to CLI configuration
+	logger.Debug().Msg("determining field names for mapper")
+	fieldNames, err := cli.getFieldNames(logger, r)
+	if err != nil {
+		logger := logger.With().Err(err).Logger()
+		if csvctx.IsContextError(err) {
+			logger.Warn().Msg("shutdown requested while getting CSV field names")
+		} else {
+			logger.Error().Msg("error getting CSV field names")
+		}
+		return reportedErr{err}
+	}
+	mapper := csvmap.NewFromRowSource(r, fieldNames)
+
+	// Begin flushing the output buffer periodically according to CLI configuration
 	stopFlush := startPeriodicFlush(w, cli.OutputOpts.FlushEvery)
 	defer stopFlush()
 
-	mapper := csvmap.New(r, cli.FieldNames)
 	logger.Info().Msg("ready to receive CSV data")
 	for {
 		logger.Debug().Msg("waiting to read next CSV record")
 		result := mapper.Next()
 		err = result.Err
+
+		// Abort immediately if context was cancelled
+		if csvctx.IsContextError(err) {
+			logger.Warn().Err(err).Msg("shutdown requested while reading next CSV record")
+			return reportedErr{err}
+		}
 
 		if err == io.EOF {
 			logger.Debug().Msg("encountered EOF")
@@ -232,18 +234,18 @@ func (cli *CLI) Run(logger zerolog.Logger, r *csv.Reader, w *jsonRecordWriter, a
 		case allow:
 			lineLogger.Info().Msg("writing transformed record to output stream")
 			if _, err := w.WriteRecord(result.Record); err != nil {
-				lineLogger.Error().Err(err).Msg("error writing transformed record to output stream")
+				lineLogger.Err(err).Msg("error writing transformed record to output stream")
 			}
 		case null:
 			lineLogger.Info().Msg("writing null record to output stream")
 			if _, err := w.WriteNull(); err != nil {
-				lineLogger.Error().Err(err).Msg("error writing null record to output stream")
+				lineLogger.Err(err).Msg("error writing null record to output stream")
 			}
 		case skip:
 			lineLogger.Info().Msg("skipping output for record")
 		case abort:
 			lineLogger.Error().Msg("aborting execution due to error")
-			return runErr{err}
+			return reportedErr{err}
 		}
 
 		if cli.OutputOpts.FlushEvery == 0 {
@@ -256,4 +258,32 @@ func (cli *CLI) Run(logger zerolog.Logger, r *csv.Reader, w *jsonRecordWriter, a
 
 	logger.Info().Msg("no more records")
 	return nil
+}
+
+// getFieldNames returns fieldnames configured on cli, if any, or else reads the
+// first row of data to get fieldnames from the CSV header.
+// This means that when cli.FieldNames has values, the first row of the CSV will
+// be treated as a data row, not a header row.
+// Returns errors from r.Read().
+func (cli *CLI) getFieldNames(logger zerolog.Logger, r interface{ Read() ([]string, error) }) ([]string, error) {
+	if len(cli.FieldNames) > 0 {
+		return cli.FieldNames, nil
+	}
+
+	logger.Debug().Msg("reading CSV header row to determine field names")
+	cancelWaitLogging := DoAfterUnlessCanceled(5*time.Second, func() {
+		logger.Info().Msg("still waiting for CSV header row input")
+	})
+
+	fieldNames, err := r.Read()
+	cancelWaitLogging()
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Debug().
+		Int("field-count", len(fieldNames)).
+		Msg("derived field names from CSV header row")
+
+	return fieldNames, nil
 }

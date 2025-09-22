@@ -21,6 +21,13 @@ type RowResult struct {
 	Line int
 }
 
+type rowSource interface {
+	// From assoc
+	Read() ([]string, error)
+	// from encoding/csv.Reader
+	FieldPos(field int) (line, col int)
+}
+
 // Mapper reads CSV rows returns each as a fieldname-keyed record.
 // Construct with NewMapper and iterate by calling Next, which yields a RowResult containing
 // the mapped record, any error, and line number that produced the record and/or error
@@ -31,7 +38,7 @@ type RowResult struct {
 // via channels.
 type Mapper struct {
 	m CSVMapReader
-	r *csv.Reader
+	r rowSource
 }
 
 // New returns a new *Mapper that maps values from r to fields.
@@ -39,6 +46,15 @@ func New(r *csv.Reader, fields []string) *Mapper {
 	return &Mapper{
 		m: assoc.NewMapReader(r, fields),
 		r: r,
+	}
+}
+
+// NewFromRowSource is basically equivalent to New(), but slightly more flexible
+// as it expects a minimal rowSource implemenation rather than requiring a concrete *csv.Reader.
+func NewFromRowSource(rs rowSource, fields []string) *Mapper {
+	return &Mapper{
+		m: assoc.NewMapReader(rs, fields),
+		r: rs,
 	}
 }
 

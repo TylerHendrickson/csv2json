@@ -1,12 +1,17 @@
 package main
 
 import (
+	"encoding"
 	"strings"
 
 	"github.com/docker/go-units"
 )
 
+// SizeBytes represents an amount of data in bytes.
 type SizeBytes int
+
+// Compile-time assertion
+var _ encoding.TextUnmarshaler = (*SizeBytes)(nil)
 
 func (s *SizeBytes) UnmarshalText(b []byte) error {
 	str := strings.TrimSpace(string(b))

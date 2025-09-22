@@ -3,26 +3,30 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/signal"
 	"time"
 
 	"github.com/alecthomas/kong"
 	"github.com/rs/zerolog"
 )
 
-const (
-	AppVersion string = "0.2.0" // TODO: Make this dynamic?
-)
-
 func main() {
+	// Register context to allow graceful shutdown on SIGINT.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	// If signaled, unregister to restore default behavior and allow any
+	// subsequent SIGINT to exit immediately.
+	go func() { <-ctx.Done(); stop() }()
+	defer stop()
+
 	var cli CLI
-	// TODO: Handle OS signals to enable logging on SIGINT, etc.
-	ctx := context.Background()
-	kctx := kong.Parse(&cli,
+	kctx := kong.Parse(
+		&cli,
 		kong.Description("Restructures CSV into JSON."),
-		kong.Bind(ctx),
+		kong.BindTo(ctx, (*context.Context)(nil)),
 		kong.Vars{
-			"version":             AppVersion,
+			"version":             versionStringShort(),
 			"defaultLogLevelName": zerolog.WarnLevel.String(),
 			"logLevelEnum": joinStringers(",",
 				zerolog.TraceLevel,
@@ -40,10 +44,16 @@ func main() {
 		},
 	)
 
+	if cli.VersionFull {
+		// Print detailed version and exit
+		fmt.Fprintln(kctx.Stdout, versionStringFull())
+		kctx.Exit(0)
+	}
+
 	if err := kctx.Run(); err != nil {
-		var re runErr
+		var re reportedErr
 		if errors.As(err, &re) {
-			os.Exit(1)
+			kctx.Exit(1)
 		}
 		kctx.FatalIfErrorf(err)
 	}

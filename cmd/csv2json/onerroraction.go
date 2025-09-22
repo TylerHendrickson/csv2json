@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding"
 	"fmt"
 	"strings"
 )
@@ -8,6 +9,9 @@ import (
 // OnErrorAction represent a behavior for the application to follow
 // when an error results from reading CSV input.
 type OnErrorAction int
+
+// Compile-time assertion
+var _ encoding.TextUnmarshaler = (*OnErrorAction)(nil)
 
 const (
 	allow OnErrorAction = iota // Output a transformed record despite any error

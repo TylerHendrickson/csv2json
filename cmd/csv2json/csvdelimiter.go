@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding"
 	"encoding/json"
 	"fmt"
 	"unicode/utf8"
@@ -10,6 +11,9 @@ import (
 // CSVDelimiter represents a character used to delimit CSV field separators (e.g. commas)
 // or commented lines.
 type CSVDelimiter rune
+
+// Compile-time assertion
+var _ encoding.TextUnmarshaler = (*CSVDelimiter)(nil)
 
 func (d *CSVDelimiter) UnmarshalText(text []byte) error {
 	var delim CSVDelimiter

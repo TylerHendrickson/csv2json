@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -55,7 +54,10 @@ func NewJSONRecordWriterSize(w io.Writer, asArray bool, size int) *jsonRecordWri
 
 // WriteRecord converts rec to JSON and writes the resulting bytes data to the buffer.
 func (jrw *jsonRecordWriter) WriteRecord(rec map[string]string) (n int, err error) {
-	data, _ := json.Marshal(rec)
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return 0, err
+	}
 	return jrw.Write(data)
 }
 
@@ -73,7 +75,7 @@ func (jrw *jsonRecordWriter) Write(data []byte) (int, error) {
 	defer jrw.mux.Unlock()
 
 	if jrw.closed {
-		return 0, fmt.Errorf("cannot write on closed writer")
+		return 0, ErrJSONRecordWriterClosed
 	}
 
 	if len(data) == 0 {
@@ -142,7 +144,6 @@ func (jrw *jsonRecordWriter) Flush() error {
 // startPeriodicFlush starts a goroutine that flushes w every d until stop is called.
 // If d <= 0, no flushing will occur and stop is a no-op.
 // It is safe to call stop() multiple times.
-// TODO: Should this use a context for better signal handling?
 func startPeriodicFlush(w interface{ Flush() error }, d time.Duration) (stop func()) {
 	if d <= 0 {
 		return func() {}
@@ -157,12 +158,11 @@ func startPeriodicFlush(w interface{ Flush() error }, d time.Duration) (stop fun
 		default:
 		}
 
-		ticker := time.NewTicker(d)
-		defer ticker.Stop()
-
+		t := time.NewTicker(d)
+		defer t.Stop()
 		for {
 			select {
-			case <-ticker.C:
+			case <-t.C:
 				_ = w.Flush()
 			case <-done:
 				return

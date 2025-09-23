@@ -19,6 +19,7 @@ func (d *CSVDelimiter) UnmarshalText(text []byte) error {
 	var delim CSVDelimiter
 
 	if bytes.EqualFold(text, []byte("tab")) {
+		// Literal "tab" accepted as a friendly alternative to tab character
 		delim = '\t'
 	} else if count := utf8.RuneCount(text); count != 1 {
 		return fmt.Errorf("must be exactly 1 unicode character (got %d)", count)

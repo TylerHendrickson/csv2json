@@ -26,38 +26,37 @@ type reportedErr struct {
 
 // CLI is the command-line application root.
 type CLI struct {
-	CSVFile *os.File ` arg:"" help:"CSV source file to transform. [default: \"-\" (to read from stdin)]" default:"-" name:"FILE" env:"CSV_FILE"`
+	CSVFile *os.File ` arg:"" help:"The CSV source file to transform. Use \"-\" to read from standard input. [default: \"${default}\"]" default:"-" name:"FILE" env:"CSV_FILE"`
 
 	Version     kong.VersionFlag `help:"Print version information and exit."`
 	VersionFull bool             `help:"Print detailed version information and exit."`
-	FieldNames  []string         `name:"fields" help:"Ordered CSV column names. When set, the first CSV row will be treated as a data row, not a header row. [default: (determine fields from CSV header row.)]" placeholder:"NAME" env:"CSV_FIELDS"`
+	FieldNames  []string         `name:"fields" help:"Ordered CSV column names. When set, the first row will be treated as data, not a header. [default: (determine fields from CSV header row.)]" placeholder:"NAME" env:"CSV_FIELDS"`
 
 	OutputOpts struct {
-		AsArray bool `name:"array" help:"When set, outputs an array of parsed records. [default: (unset, i.e. outputs newline-delimited JSON.)]" env:"ARRAY"`
-		// Flue time.Duration    `help:"Duration for automatically flushing parsed records output. For zero-value durations, output is immediate (may result in high disk I/O). Values < 0 wait until the output buffer is full. [default: (1s)]" default:"1s" placeholder:"DURATION" env:"FLUSH_INTERVAL"`
+		AsArray    bool          `name:"array" help:"Output a JSON array of parsed records. [default: (outputs newline-delimited JSON.)]" env:"ARRAY"`
 		FlushEvery time.Duration `help:"How often to write results to the output. If 0, write each record immediately (no wait). Negative values disable the timer and write according to --output-buffer-size only. Output is always fully written on shutdown. [default: ${default}]" default:"1s" placeholder:"DURATION" env:"FLUSH_INTERVAL"`
 		BufferSize SizeBytes     `help:"How much data to collect before writing to output. [default: (system default)]" default:"0" placeholder:"BYTES" env:"BUFFER_SIZE"`
 	} `embed:"" group:"Output Options" prefix:"output-" envprefix:"OUTPUT_"`
 
 	CSVParserOpts struct {
-		FieldDelimiter   CSVDelimiter  `help:"Unicode character (or the word \"tab\" for \"\\t\") for delimiting CSV fields. [default: \"${default}\"] " placeholder:"CHAR|tab" default:"," env:"FIELD_DELIMITER"`
-		CommentDelimiter *CSVDelimiter `help:"Unicode character (or the word \"tab\" for \"\\t\") for delimiting commented CSV lines. [default: (no lines will be ignored.)]" placeholder:"CHAR|tab" optional:"" env:"COMMENT_DELIMITER"`
+		FieldDelimiter   CSVDelimiter  `help:"Delimiter for CSV fields (e.g. a comma, semicolon, tab, pipe, etc.). Must be a single unicode character or the word \"tab\" for \"\\t\". [default: \"${default}\"] " placeholder:"CHAR|tab" default:"," env:"FIELD_DELIMITER"`
+		CommentDelimiter *CSVDelimiter `help:"Lines starting with this character are ignored, e.g. \"#\". Must be a single unicode character or the word \"tab\" for \"\\t\". [default: (no lines will be ignored.)]" placeholder:"CHAR|tab" optional:"" env:"COMMENT_DELIMITER"`
 		LazyQuotes       bool          `help:"A quote may appear in an unquoted field and a non-doubled quote may appear in a quoted field. " env:"LAZY_QUOTES"`
 		TrimLeadingSpace bool          `help:"Leading white space in a field is ignored (even if --csv-field-delimiter is a white space character). " env:"TRIM_LEADING_SPACE"`
 	} `embed:"" prefix:"csv-" group:"CSV Parser Options" envprefix:"CSV_PARSER_"`
 
 	ErrorHandlingOpts struct {
-		OnParseError  OnErrorAction `help:"Action the program should take for a record that fails to parse. [default: ${default}]" default:"abort" enum:"${onParseErrorEnum}" placeholder:"${enum}" env:"ON_PARSE_ERROR"`
-		OnValuesError OnErrorAction `help:"Action the program should take for a record that has an unexpected number of values. [default: ${default}]" default:"abort" enum:"${onValuesErrorEnum}" placeholder:"${enum}" env:"ON_VALUES_ERROR"`
+		OnParseError  OnErrorAction `help:"Action the program should take for a record that fails to parse. [default: ${default}] " default:"abort" enum:"${onParseErrorEnum}" env:"ON_PARSE_ERROR"`
+		OnValuesError OnErrorAction `help:"Action the program should take for a record that has an unexpected number of values. NOTE: If \"allow\", missing fields become empty strings and additional fields are dropped. [default: ${default}] " default:"abort" enum:"${onValuesErrorEnum}" env:"ON_VALUES_ERROR"`
 	} `embed:"" group:"Error-Handling Behaviors" help:"Behaviors for handling errors"`
 
 	LoggingOpts struct {
-		Level  zerolog.Level `help:"Minimum log level. [default: ${default}] " placeholder:"${enum}" enum:"${logLevelEnum}" default:"warn" env:"LOG_LEVEL"`
+		Level  zerolog.Level `help:"Minimum log level. [default: ${default}] " enum:"${logLevelEnum}" default:"warn" env:"LOG_LEVEL"`
 		Format struct {
 			Pretty bool `help:"Force pretty log output. [default: (enabled if stderr is a TTY.)] " xor:"logfmt" env:"LOG_PRETTY"`
 			JSON   bool `help:"Force JSON log output. [default: (enabled if stderr is not a TTY.)]" xor:"logfmt" env:"LOG_JSON"`
 		} `embed:""`
-		TimestampLayout string `help:"Layout for formatting logged timestamps. [default: \"${default}\" (${logTimestampDefaultName})] " default:"${logTimestampDefaultLayout}" placeholder:"LAYOUT" env:"LOG_TIMESTAMP_LAYOUT"`
+		TimestampLayout string `help:"Layout for formatting logged timestamps. Expects a Go time layout string. [default: \"${default}\" (${logTimestampDefaultName})] " default:"${logTimestampDefaultLayout}" placeholder:"LAYOUT" env:"LOG_TIMESTAMP_LAYOUT"`
 		IncludeRecords  bool   `help:"Include transformed records in log output. " name:"records" env:"LOG_INCLUDE_RECORDS"`
 		NoColor         bool   `help:"Disable colorized log output (affects pretty logs only). " default:"false" env:"NO_COLOR,LOG_NO_COLOR"`
 	} `embed:"" prefix:"log-" group:"Logging Options" description:"Control Logging Behaviors"`
@@ -177,8 +176,8 @@ func (cli *CLI) Run(ctx context.Context, logger zerolog.Logger, r *csvctx.Reader
 	mapper := csvmap.NewFromRowSource(r, fieldNames)
 
 	// Begin flushing the output buffer periodically according to CLI configuration
-	stopFlush := startPeriodicFlush(w, cli.OutputOpts.FlushEvery)
-	defer stopFlush()
+	stopPeriodicFlush := startPeriodicFlush(w, cli.OutputOpts.FlushEvery)
+	defer stopPeriodicFlush()
 
 	logger.Info().Msg("ready to receive CSV data")
 	for {
@@ -208,16 +207,16 @@ func (cli *CLI) Run(ctx context.Context, logger zerolog.Logger, r *csvctx.Reader
 			lineLogger = lineLogger.With().Err(err).Logger()
 			switch err {
 			case assoc.ErrValuesFewerThanKeys:
-				action = cli.ErrorHandlingOpts.OnValuesError
+				explanation := "row does not contain enough field values to map all columns"
 				lineLogger = lineLogger.With().
 					Str("error-type", "values").
-					Str("explanation", "row does not contain enough fields to map all columns").
+					Str("explanation", explanation).
 					Logger()
 			case assoc.ErrValuesExceedKeys:
 				action = cli.ErrorHandlingOpts.OnValuesError
 				lineLogger = lineLogger.With().
 					Str("error-type", "values").
-					Str("explanation", "not enough columns to map all fields in row").
+					Str("explanation", "row has more fields than header names; extra fields will be ignored").
 					Logger()
 			default:
 				lineLogger = lineLogger.With().

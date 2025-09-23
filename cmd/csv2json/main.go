@@ -25,10 +25,16 @@ func main() {
 		&cli,
 		kong.Description("Restructures CSV into JSON."),
 		kong.BindTo(ctx, (*context.Context)(nil)),
+		RegisterEnumPlaceholderMapperOpt[zerolog.Level](),
+		RegisterEnumPlaceholderMapperOpt[OnErrorAction](),
 		kong.Vars{
-			"version":             versionStringShort(),
-			"defaultLogLevelName": zerolog.WarnLevel.String(),
-			"logLevelEnum": joinStringers(",",
+			"version":                   versionStringShort(),
+			"defaultLogLevelName":       zerolog.WarnLevel.String(),
+			"logTimestampDefaultName":   "RFC3339",
+			"logTimestampDefaultLayout": time.RFC3339,
+			"onParseErrorEnum":          enumTag(abort, null, skip),
+			"onValuesErrorEnum":         enumTag(abort, allow, null, skip),
+			"logLevelEnum": enumTag(
 				zerolog.TraceLevel,
 				zerolog.DebugLevel,
 				zerolog.InfoLevel,
@@ -37,10 +43,7 @@ func main() {
 				zerolog.FatalLevel,
 				zerolog.PanicLevel,
 			),
-			"onParseErrorEnum":          joinStringers(",", abort, null, skip),
-			"onValuesErrorEnum":         joinStringers(",", abort, allow, null, skip),
-			"logTimestampDefaultName":   "RFC3339",
-			"logTimestampDefaultLayout": time.RFC3339,
+			"logTimestampLayoutExamples": joinQuoted(", ", time.RFC822, time.UnixDate, time.Stamp),
 		},
 	)
 

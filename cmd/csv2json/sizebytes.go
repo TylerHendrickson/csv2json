@@ -18,6 +18,8 @@ func (s *SizeBytes) UnmarshalText(b []byte) error {
 
 	// Prefer 1024-based units (e.g. "4k" == 4096)
 	n, err := units.RAMInBytes(str)
-	*s = SizeBytes(n)
+	if n > 0 {
+		*s = SizeBytes(n)
+	}
 	return err
 }
